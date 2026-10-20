@@ -1,6 +1,6 @@
 # Useful strategy archetypes ("ท่า") and when they fail
 
-Templates exist in `scripts/scaffold_ea.py` for the first four. All need testing per symbol/timeframe — none is profitable by default.
+The first four are built into the single EA from `scripts/scaffold_ea.py` (select with `InpStrategy`); others are added as extra options in that same EA. All need testing per symbol/timeframe — none is profitable by default.
 
 | Archetype | Entry | Exit | Filters that usually help | Fails when | Source idea |
 |---|---|---|---|---|---|
