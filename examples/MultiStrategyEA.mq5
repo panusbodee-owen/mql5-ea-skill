@@ -46,13 +46,15 @@ input int InpCloseHour      = 22;   // Close open trade at (server hour)
 enum ENUM_LOT_MODE
 {
    LOT_RISK_PERCENT = 0,   // Risk % of equity (size from stop distance)
-   LOT_FIXED = 1           // Fixed lot (e.g. 0.01)
+   LOT_FIXED = 1,          // Fixed lot (e.g. 0.01)
+   LOT_TIERS = 2           // Lot by equity tiers (compounding game plan)
 };
 
 input group "Risk"
 input ENUM_LOT_MODE InpLotMode  = LOT_RISK_PERCENT; // Position sizing
 input double InpRiskPercent     = 1.0;   // Risk per trade (% of equity) — risk mode
 input double InpFixedLot        = 0.01;  // Lot size — fixed mode
+input string InpLotTiers        = "32.4:0.02,44.4:0.03,56.4:0.04,64.4:0.05,74.4:0.06,86.4:0.07,100.4:0.08,164.4:0.09,254.4:0.10"; // Tiers mode: equity:lot (below first = min lot)
 input double InpMaxRiskCapPct   = 0;     // Skip a trade if its risk exceeds this % of equity (0 = no cap)
 input int    InpATRPeriod       = 14;    // ATR period
 input double InpSL_ATR          = 2.0;   // Stop loss (x ATR)
@@ -64,10 +66,17 @@ input double InpEquityTarget    = 0;     // Goal: stop & close when equity reach
 input double InpMaxDrawdownPct  = 50;    // Hard stop: equity this % below its peak (0 = off)
 input double InpReduceRiskDDPct = 0;     // Halve size while equity is this % below peak (0 = off)
 input bool   InpResetPeak       = false; // Reset stored peak (set true once after deposit/withdrawal)
+input group "Daily plan"
+input double InpDailyTargetPoints = 0;  // Stop for the day at profit = points x plan lot (e.g. 200; 0 = off)
+input double InpDailyTargetMoney  = 0;  // ...or a fixed money target per day (0 = off; overrides points)
+input double InpDailyLossMoney    = 0;  // Stop for the day after losing this much money (e.g. 5; 0 = off)
+input bool   InpUseLocalTime      = false; // Trading hours & day boundary in your local time
+input int    InpLocalGMTOffset    = 7;  // Your time zone (Thailand = +7)
+input int    InpServerGMTOffset   = 2;  // Broker server time zone (check Market Watch clock; often +2/+3)
 input group "Filters"
 input int    InpMaxSpreadPts    = 30;    // Max spread (points)
-input int    InpStartHour       = 0;     // Trading window start (server hour)
-input int    InpEndHour         = 24;    // Trading window end (server hour)
+input int    InpStartHour       = 0;     // Trading window start (server hour, or local if InpUseLocalTime)
+input int    InpEndHour         = 24;    // Trading window end (exclusive)
 input group "Execution"
 input ulong  InpMagic           = 240001;  // Magic number (unique per EA/symbol)
 input int    InpSlippagePts     = 10;    // Max slippage (points)
@@ -82,9 +91,14 @@ int      g_day = -1;
 double   g_dayStartEquity = 0;
 double   g_peakEquity = 0;
 bool     g_halted = false;
+bool     g_dayStopped = false;
+double   g_dayTarget = 0;
+double   g_tierEq[];
+double   g_tierLot[];
 
 void   CloseMine();    // forward declarations
 string PeakKey();
+double PlanLot();
 
 //--- helpers -------------------------------------------------------
 double Buf(const int handle, const int buffer, const int shift)
@@ -145,8 +159,8 @@ double LotsForTrade(const double slDistance)
    double scale = 1.0;   // halve size while in drawdown (if enabled)
    if(InpReduceRiskDDPct > 0 && g_peakEquity > 0 && equity <= g_peakEquity * (1.0 - InpReduceRiskDDPct / 100.0)) scale = 0.5;
    double lots;
-   if(InpLotMode == LOT_FIXED)
-      lots = NormalizeVolume(InpFixedLot * scale);
+   if(InpLotMode != LOT_RISK_PERCENT)
+      lots = NormalizeVolume(PlanLot() * scale);
    else
       lots = NormalizeVolume(equity * InpRiskPercent * scale / 100.0 / lossPerLot);
    if(lots <= 0) lots = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);   // smallest tradable size
@@ -183,19 +197,81 @@ string PeakKey() { return StringFormat("mql5ea_peak_%I64u_%s", InpMagic, _Symbol
 
 bool SpreadOK() { return SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) <= InpMaxSpreadPts; }
 
+datetime LocalTime()   // server time shifted to the user's time zone when InpUseLocalTime
+{
+   return InpUseLocalTime ? TimeCurrent() + (InpLocalGMTOffset - InpServerGMTOffset) * 3600 : TimeCurrent();
+}
+
 bool InWindow()
 {
-   MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
+   MqlDateTime dt; TimeToStruct(LocalTime(), dt);
    if(InpStartHour <= InpEndHour) return dt.hour >= InpStartHour && dt.hour < InpEndHour;
    return dt.hour >= InpStartHour || dt.hour < InpEndHour;   // window across midnight
 }
 
-bool DailyLossHit()   // baseline = equity at the first tick of the server day (resets if the EA restarts)
+bool ParseTiers()   // "equity:lot,equity:lot,..." in increasing equity order
 {
-   MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
-   if(dt.day_of_year != g_day) { g_day = dt.day_of_year; g_dayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY); }
-   if(InpMaxDailyLossPct <= 0 || g_dayStartEquity <= 0) return false;
-   return AccountInfoDouble(ACCOUNT_EQUITY) <= g_dayStartEquity * (1.0 - InpMaxDailyLossPct / 100.0);
+   ArrayResize(g_tierEq, 0); ArrayResize(g_tierLot, 0);
+   string parts[];
+   int n = StringSplit(InpLotTiers, ',', parts);
+   for(int i = 0; i < n; i++)
+   {
+      StringTrimLeft(parts[i]); StringTrimRight(parts[i]);
+      if(parts[i] == "") continue;
+      string kv[];
+      if(StringSplit(parts[i], ':', kv) != 2) { PrintFormat("Bad lot tier '%s' (use equity:lot)", parts[i]); return false; }
+      int k = ArraySize(g_tierEq);
+      ArrayResize(g_tierEq, k + 1); ArrayResize(g_tierLot, k + 1);
+      g_tierEq[k] = StringToDouble(kv[0]); g_tierLot[k] = StringToDouble(kv[1]);
+      if(g_tierLot[k] <= 0 || (k > 0 && g_tierEq[k] <= g_tierEq[k - 1])) { Print("Lot tiers: lots > 0 and equity increasing"); return false; }
+   }
+   return true;
+}
+
+double PlanLot()   // lot from the sizing plan (fixed or equity tiers); 0 in risk-% mode
+{
+   if(InpLotMode == LOT_FIXED) return InpFixedLot;
+   if(InpLotMode != LOT_TIERS) return 0;
+   double eq = AccountInfoDouble(ACCOUNT_EQUITY), lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   for(int i = 0; i < ArraySize(g_tierEq); i++)
+      if(eq >= g_tierEq[i]) lot = g_tierLot[i];
+   return lot;
+}
+
+double DailyTargetMoney()   // fixed for the whole day, from the plan lot at the start of the day
+{
+   if(InpDailyTargetMoney > 0) return InpDailyTargetMoney;
+   if(InpDailyTargetPoints <= 0) return 0;
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tickValue <= 0 || tickSize <= 0) return 0;
+   double lot = PlanLot();
+   if(lot <= 0) lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   return InpDailyTargetPoints * _Point / tickSize * tickValue * lot;
+}
+
+bool DayStop()   // true = no new trades today (daily target, daily loss money or %); baseline resets if the EA restarts
+{
+   MqlDateTime dt; TimeToStruct(LocalTime(), dt);
+   double eq = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(dt.day_of_year != g_day)
+   {
+      g_day = dt.day_of_year; g_dayStartEquity = eq; g_dayStopped = false; g_dayTarget = DailyTargetMoney();
+      if(g_dayTarget > 0 || InpDailyLossMoney > 0)
+         PrintFormat("New day: start equity %.2f, target +%.2f, loss limit -%.2f", eq, g_dayTarget, InpDailyLossMoney);
+   }
+   if(g_dayStopped) return true;
+   if(g_dayStartEquity <= 0) return false;
+   double pnl = eq - g_dayStartEquity;
+   string why = "";
+   if(InpMaxDailyLossPct > 0 && eq <= g_dayStartEquity * (1.0 - InpMaxDailyLossPct / 100.0)) why = "daily loss %";
+   else if(InpDailyLossMoney > 0 && pnl <= -InpDailyLossMoney) why = "daily loss limit";
+   else if(g_dayTarget > 0 && pnl >= g_dayTarget) why = "daily profit target";
+   if(why == "") return false;
+   g_dayStopped = true;
+   CloseMine();
+   PrintFormat("Day stopped (%s): P/L %.2f from %.2f", why, pnl, g_dayStartEquity);
+   return true;
 }
 
 //--- strategies (one block per strategy; only the selected one runs) --
@@ -470,6 +546,7 @@ int OnInit()
 {
    if(InpLotMode == LOT_RISK_PERCENT && (InpRiskPercent <= 0 || InpRiskPercent > 20)) { Print("Risk per trade must be > 0 and <= 20%"); return INIT_PARAMETERS_INCORRECT; }
    if(InpLotMode == LOT_FIXED && InpFixedLot <= 0) { Print("Fixed lot must be > 0"); return INIT_PARAMETERS_INCORRECT; }
+   if(InpLotMode == LOT_TIERS && !ParseTiers()) return INIT_PARAMETERS_INCORRECT;
    if(InpResetPeak) GlobalVariableDel(PeakKey());
    g_peakEquity = AccountInfoDouble(ACCOUNT_EQUITY);
    if(GlobalVariableCheck(PeakKey())) g_peakEquity = MathMax(g_peakEquity, GlobalVariableGet(PeakKey()));
@@ -494,7 +571,7 @@ void OnDeinit(const int reason)
 
 void OnTick()
 {
-   bool lossHit = DailyLossHit();           // tracks the day baseline every tick
+   bool dayStop = DayStop();                // daily target / loss limits, day baseline every tick
    bool stopNew = GoalOrHardStop();         // goal reached / max drawdown → no new trades
    double atr = Buf(hATR, 0, 1);
    if(atr == EMPTY_VALUE || atr <= 0) return;
@@ -502,7 +579,7 @@ void OnTick()
    if(!IsNewBar()) return;                   // signals only once per closed bar
    int pos = PositionDir();
    if(pos != 0 && ExitSignal(pos)) { CloseMine(); pos = PositionDir(); }
-   if(pos != 0 || lossHit || stopNew || !SpreadOK() || !InWindow()) return;
+   if(pos != 0 || dayStop || stopNew || !SpreadOK() || !InWindow()) return;
    int sig = EntrySignal();
    if(sig != 0) Open(sig, atr);
 }

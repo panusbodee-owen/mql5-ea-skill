@@ -28,6 +28,23 @@ Respect a track record the user reports; still show the drawdown/streak numbers 
 - `InpReduceRiskDDPct` — halve size during drawdowns.
 - Daily loss limit (`InpMaxDailyLossPct`) — stops tilt-like sequences.
 
+## Preset: gold daily plan (compounding lot tiers)
+Captured from a user's own "$5 → $100k in 100 days" game plan: lot steps up as equity grows (anti-martingale, NOT doubling after losses), daily target ≈ 200 points × lot, stop the day after a fixed money loss, trade 12:00–22:00 Thai time.
+
+| Input | Value |
+|---|---|
+| Chart | XAUUSD (check `_Digits`: on 2-digit gold 200 points = $2 move; on 3-digit it is $0.20 — adjust points) |
+| `InpLotMode` | `LOT_TIERS` |
+| `InpLotTiers` | `32.4:0.02,44.4:0.03,56.4:0.04,64.4:0.05,74.4:0.06,86.4:0.07,100.4:0.08,164.4:0.09,254.4:0.10` (extend for higher equity) |
+| `InpDailyTargetPoints` | `200` (or `InpDailyTargetMoney` for the first days, e.g. 0.6–1.8 at 0.01 lot) |
+| `InpDailyLossMoney` | `5` |
+| `InpUseLocalTime` / `InpLocalGMTOffset` / `InpServerGMTOffset` | `true` / `7` / broker offset (Market Watch time − UTC, often 2 or 3) |
+| `InpStartHour` / `InpEndHour` | `12` / `22` |
+| `InpMaxDrawdownPct` | keep on (e.g. 50) |
+| Strategy (`InpStrategy`) | the user's entry rule → add as a new `STRAT_` option; until then test the built-in ones |
+
+Reality check to show with the plan: the table needs ≈ +10% per day compounded; with $5 stop-day on a $10 account one bad day is −50%. Run `goal_planner.py` with the user's real trades before going live.
+
 ## Goal setting (use goal_planner output, not promises)
 - Express the goal as required growth: e.g. $15 → $1,015 in 12 months = ×68 ≈ +42%/month.
 - Report P(goal), P(lost half) and median drawdown for the user's actual edge, then let the user choose the risk level.
