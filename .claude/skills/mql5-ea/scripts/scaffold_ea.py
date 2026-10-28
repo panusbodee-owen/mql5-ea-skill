@@ -160,13 +160,27 @@ ${enum_values}
 input group "Strategy selection"
 input ENUM_STRATEGY InpStrategy = ${default_enum};   // Active strategy
 ${inputs}
+enum ENUM_LOT_MODE
+{
+   LOT_RISK_PERCENT = 0,   // Risk % of equity (size from stop distance)
+   LOT_FIXED = 1           // Fixed lot (e.g. 0.01)
+};
+
 input group "Risk"
-input double InpRiskPercent     = 1.0;   // Risk per trade (% of equity)
+input ENUM_LOT_MODE InpLotMode  = LOT_RISK_PERCENT; // Position sizing
+input double InpRiskPercent     = 1.0;   // Risk per trade (% of equity) — risk mode
+input double InpFixedLot        = 0.01;  // Lot size — fixed mode
+input double InpMaxRiskCapPct   = 0;     // Skip a trade if its risk exceeds this % of equity (0 = no cap)
 input int    InpATRPeriod       = 14;    // ATR period
 input double InpSL_ATR          = 2.0;   // Stop loss (x ATR)
 input double InpTP_ATR          = 0.0;   // Take profit (x ATR, 0 = none)
 input double InpTrail_ATR       = 0.0;   // Trailing stop (x ATR, 0 = off)
 input double InpMaxDailyLossPct = 3.0;   // Stop trading for the day after this equity loss (%, 0 = off)
+input group "Small account & goals"
+input double InpEquityTarget    = 0;     // Goal: stop & close when equity reaches this (0 = off)
+input double InpMaxDrawdownPct  = 50;    // Hard stop: equity this % below its peak (0 = off)
+input double InpReduceRiskDDPct = 0;     // Halve size while equity is this % below peak (0 = off)
+input bool   InpResetPeak       = false; // Reset stored peak (set true once after deposit/withdrawal)
 input group "Filters"
 input int    InpMaxSpreadPts    = 30;    // Max spread (points)
 input int    InpStartHour       = 0;     // Trading window start (server hour)
@@ -181,6 +195,11 @@ ${globals}
 datetime g_lastBar = 0;
 int      g_day = -1;
 double   g_dayStartEquity = 0;
+double   g_peakEquity = 0;
+bool     g_halted = false;
+
+void   CloseMine();    // forward declarations
+string PeakKey();
 
 //--- helpers -------------------------------------------------------
 double Buf(const int handle, const int buffer, const int shift)
@@ -231,15 +250,51 @@ double NormalizeVolume(double lots)
    return NormalizeDouble(MathMin(lots, vmax), digits);
 }
 
-double LotsForRisk(const double slDistance)
+double LotsForTrade(const double slDistance)
 {
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   if(slDistance <= 0 || tickValue <= 0 || tickSize <= 0) return 0;
-   double riskMoney  = AccountInfoDouble(ACCOUNT_EQUITY) * InpRiskPercent / 100.0;
+   double equity    = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(slDistance <= 0 || tickValue <= 0 || tickSize <= 0 || equity <= 0) return 0;
    double lossPerLot = slDistance / tickSize * tickValue;
-   return NormalizeVolume(riskMoney / lossPerLot);
+   double scale = 1.0;   // halve size while in drawdown (if enabled)
+   if(InpReduceRiskDDPct > 0 && g_peakEquity > 0 && equity <= g_peakEquity * (1.0 - InpReduceRiskDDPct / 100.0)) scale = 0.5;
+   double lots;
+   if(InpLotMode == LOT_FIXED)
+      lots = NormalizeVolume(InpFixedLot * scale);
+   else
+      lots = NormalizeVolume(equity * InpRiskPercent * scale / 100.0 / lossPerLot);
+   if(lots <= 0) lots = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);   // smallest tradable size
+   double riskPct = lots * lossPerLot / equity * 100.0;
+   if(InpMaxRiskCapPct > 0 && riskPct > InpMaxRiskCapPct)
+   {
+      PrintFormat("Trade skipped: %.2f lot would risk %.1f%% of equity (cap %.1f%%). Cent account or tighter stop helps.", lots, riskPct, InpMaxRiskCapPct);
+      return 0;
+   }
+   return lots;
 }
+
+bool GoalOrHardStop()   // true = no new trades (target reached or max drawdown hit)
+{
+   double eq = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(eq > g_peakEquity) { g_peakEquity = eq; GlobalVariableSet(PeakKey(), eq); }
+   if(g_halted) return true;
+   if(InpEquityTarget > 0 && eq >= InpEquityTarget)
+   {
+      g_halted = true; CloseMine();
+      PrintFormat("Equity target %.2f reached: positions closed, trading stopped. Lock/withdraw profit, then restart with InpResetPeak=true.", InpEquityTarget);
+      return true;
+   }
+   if(InpMaxDrawdownPct > 0 && g_peakEquity > 0 && eq <= g_peakEquity * (1.0 - InpMaxDrawdownPct / 100.0))
+   {
+      g_halted = true; CloseMine();
+      PrintFormat("Max drawdown %.1f%% from peak %.2f hit: positions closed, trading stopped for review.", InpMaxDrawdownPct, g_peakEquity);
+      return true;
+   }
+   return false;
+}
+
+string PeakKey() { return StringFormat("mql5ea_peak_%I64u_%s", InpMagic, _Symbol); }
 
 bool SpreadOK() { return SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) <= InpMaxSpreadPts; }
 
@@ -306,8 +361,8 @@ bool Open(const int dir, const double atr)
       double tpDist = MathMax(InpTP_ATR * atr, stopsLevel + _Point);
       tp = NormalizeDouble(dir > 0 ? price + tpDist : price - tpDist, _Digits);
    }
-   double lots = LotsForRisk(slDist);
-   if(lots <= 0) { Print("Lot size below broker minimum for this risk setting; trade skipped"); return false; }
+   double lots = LotsForTrade(slDist);
+   if(lots <= 0) return false;   // reason already printed
    double margin = 0;
    ENUM_ORDER_TYPE type = dir > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    if(!OrderCalcMargin(type, _Symbol, lots, price, margin) || margin > AccountInfoDouble(ACCOUNT_MARGIN_FREE))
@@ -359,7 +414,12 @@ void Trail(const double atr)
 //--- events --------------------------------------------------------
 int OnInit()
 {
-   if(InpRiskPercent <= 0 || InpRiskPercent > 5) { Print("Risk per trade must be > 0 and <= 5%"); return INIT_PARAMETERS_INCORRECT; }
+   if(InpLotMode == LOT_RISK_PERCENT && (InpRiskPercent <= 0 || InpRiskPercent > 20)) { Print("Risk per trade must be > 0 and <= 20%"); return INIT_PARAMETERS_INCORRECT; }
+   if(InpLotMode == LOT_FIXED && InpFixedLot <= 0) { Print("Fixed lot must be > 0"); return INIT_PARAMETERS_INCORRECT; }
+   if(InpResetPeak) GlobalVariableDel(PeakKey());
+   g_peakEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(GlobalVariableCheck(PeakKey())) g_peakEquity = MathMax(g_peakEquity, GlobalVariableGet(PeakKey()));
+   g_halted = false;
    trade.SetExpertMagicNumber(InpMagic);
    trade.SetDeviationInPoints(InpSlippagePts);
    trade.SetTypeFillingBySymbol(_Symbol);
@@ -367,7 +427,8 @@ int OnInit()
    if(hATR == INVALID_HANDLE) { Print("ATR handle failed: ", GetLastError()); return INIT_FAILED; }
    int rc = InitStrategy();   // creates handles for the selected strategy only
    if(rc != INIT_SUCCEEDED) return rc;
-   PrintFormat("%s started: strategy=%s, risk=%.2f%%", MQLInfoString(MQL_PROGRAM_NAME), EnumToString(InpStrategy), InpRiskPercent);
+   PrintFormat("%s started: strategy=%s, sizing=%s, peak equity=%.2f, min lot=%.2f", MQLInfoString(MQL_PROGRAM_NAME),
+               EnumToString(InpStrategy), EnumToString(InpLotMode), g_peakEquity, SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN));
    return INIT_SUCCEEDED;
 }
 
@@ -380,13 +441,14 @@ void OnDeinit(const int reason)
 void OnTick()
 {
    bool lossHit = DailyLossHit();           // tracks the day baseline every tick
+   bool stopNew = GoalOrHardStop();         // goal reached / max drawdown → no new trades
    double atr = Buf(hATR, 0, 1);
    if(atr == EMPTY_VALUE || atr <= 0) return;
    Trail(atr);                               // stop management every tick
    if(!IsNewBar()) return;                   // signals only once per closed bar
    int pos = PositionDir();
    if(pos != 0 && ExitSignal(pos)) { CloseMine(); pos = PositionDir(); }
-   if(pos != 0 || lossHit || !SpreadOK() || !InWindow()) return;
+   if(pos != 0 || lossHit || stopNew || !SpreadOK() || !InWindow()) return;
    int sig = EntrySignal();
    if(sig != 0) Open(sig, atr);
 }

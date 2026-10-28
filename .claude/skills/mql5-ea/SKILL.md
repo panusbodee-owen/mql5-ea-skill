@@ -1,6 +1,6 @@
 ---
 name: mql5-ea
-description: MQL5 Expert Advisor development for MetaTrader 5 — always delivers exactly ONE self-contained EA (.mq5) containing proven strategy archetypes selectable by input (MA crossover trend, Donchian/Turtle breakout, Bollinger+RSI mean reversion with trend filter, session range breakout) with risk-% position sizing, ATR stops/trailing, spread/time filters and daily loss limit; reviews/ports MQL4 code to MQL5; lints EAs for handle leaks, unchecked trades, missing stop loss and martingale; analyses backtest/live trades (profit factor, drawdown, R-multiples, SQN, Monte Carlo). Grounded in well-known EA and trading-system books. Use when the user asks for MQL5, MT5, EA, Expert Advisor, trading robot, indicator-based strategy, backtest analysis, or porting MQL4.
+description: MQL5 Expert Advisor development for MetaTrader 5 — always delivers exactly ONE self-contained EA (.mq5) containing proven strategy archetypes selectable by input (MA crossover trend, Donchian/Turtle breakout, Bollinger+RSI mean reversion with trend filter, session range breakout) with risk-% position sizing, ATR stops/trailing, spread/time filters and daily loss limit; reviews/ports MQL4 code to MQL5; lints EAs for handle leaks, unchecked trades, missing stop loss and martingale; analyses backtest/live trades (profit factor, drawdown, R-multiples, SQN, Monte Carlo); small-account mode (fixed 0.01 lot, risk cap, equity goal, drawdown hard stop) and a goal planner that turns a money target (e.g. $10 → $1,000) into probabilities; captures the user's own proven method into the EA. Grounded in well-known EA and trading-system books. Use when the user asks for MQL5, MT5, EA, Expert Advisor, trading robot, indicator-based strategy, backtest analysis, small account, cent account, profit target, compounding, or porting MQL4.
 ---
 
 # MQL5 EA (book-grounded, token-efficient)
@@ -15,7 +15,8 @@ description: MQL5 Expert Advisor development for MetaTrader 5 — always deliver
 1. New EA → run `scripts/scaffold_ea.py` once, then edit only strategy blocks/inputs. Never hand-write the risk/execution core.
 2. Existing code → run `scripts/check_mq5.py` first; fix reported lines; show diffs only.
 3. Results → run `scripts/analyze_trades.py` on the exported trades; never compute metrics in chat.
-4. Load one reference at a time: `ea-patterns.md` (API/how), `strategies.md` (which archetype), `risk-and-testing.md` (sizing/validation), `books.md` (only when asked for sources).
+4. Load one reference at a time: `ea-patterns.md` (API/how), `strategies.md` (which archetype), `risk-and-testing.md` (sizing/validation), `small-account.md` (small capital, money goals, capturing the user's own method), `books.md` (only when asked for sources).
+5. Money target or small capital mentioned → run `goal_planner.py` and show its table; never promise a profit.
 
 ## Scripts (run, do not read)
 ```bash
@@ -23,10 +24,14 @@ S=.claude/skills/mql5-ea/scripts   # or ~/.claude/skills/mql5-ea/scripts
 python3 $S/scaffold_ea.py MyEA [--default ma_cross|donchian|bb_reversion|session_breakout] [--magic 240001] --out MQL5/Experts
 python3 $S/check_mq5.py MQL5/Experts/MyEA.mq5
 python3 $S/analyze_trades.py trades.csv --initial 10000 --risk 100 [--xlsx report.xlsx]
+python3 $S/goal_planner.py --capital 15 --target 1015 --months 12 --trades-per-month 60 --min-risk-usd 1 [--winrate 0.5 --rr 1.5 | --trades history.csv --risk-usd 3]
 ```
 
+## User's own method
+If the user says they already trade a working method: their rules + trade history are the source of truth. Follow `small-account.md` → measure (`analyze_trades.py`), estimate repeatability (`goal_planner.py --trades`), encode as a new `STRAT_` option in the same EA, then check the tester reproduces their trades.
+
 ## Non-negotiables in every EA
-- Stop loss on every order; size from risk % and stop distance; round volume down; skip if below min lot.
+- Stop loss on every order; size by risk % or fixed lot (`InpLotMode`); never round up beyond the user's lot; respect `InpMaxRiskCapPct`; keep the drawdown hard stop on.
 - Indicator handles in `OnInit`, `CopyBuffer` with checked counts, `IndicatorRelease` in `OnDeinit`.
 - Decide on closed bars once per bar; manage stops per tick.
 - Magic number filter on every position loop; check `ResultRetcode()`; margin check before sending.

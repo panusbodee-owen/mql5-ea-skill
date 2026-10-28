@@ -9,13 +9,16 @@ Builds **one** safe MQL5 Expert Advisor that contains well-known strategy archet
 | One EA | `scripts/scaffold_ea.py` → a single self-contained `.mq5` with 4 selectable strategies: MA crossover + ADX, Donchian (Turtle) breakout, Bollinger + RSI reversion with trend filter, session range breakout. Only the selected strategy creates indicator handles. Re-running refuses to create a second EA; new ideas are added as extra options in the same file |
 | Safety core in every EA | Risk-% sizing from ATR stop (volume rounded down, skip below min lot), margin check, spread & time-window filters, daily loss limit, ATR trailing stop, magic-number isolation, closed-bar signals, retcode checks, handle release |
 | Review / port MQL4 | `scripts/check_mq5.py` → MQL4 leftovers (`start()`, `OrderSelect(...MODE_TRADES)`, `Close[]`, `Ask`, 7-arg `iMA`…), handles created in `OnTick`, unchecked trades, missing stop loss, fixed lots, martingale |
+| Small accounts & goals | EA inputs: `InpLotMode` (risk % or **fixed lot, e.g. 0.01**), `InpMaxRiskCapPct` (skip trades that would risk too much), `InpEquityTarget` (close & stop at the goal so profit can be withdrawn), `InpMaxDrawdownPct` (hard stop from peak, default 50%), `InpReduceRiskDDPct` (halve size in drawdown). `scripts/goal_planner.py` turns a target such as $10 → $1,000 into P(goal), P(lost half), P(stuck) and median drawdown per risk level — from win rate/RR or bootstrapped from your real trade history, including the broker minimum-lot constraint |
+| Your own method | `references/small-account.md`: collect your rules + MT5 history → measure with `analyze_trades.py` → estimate repeatability with `goal_planner.py --trades` → encode as a new strategy option in the same EA → confirm the tester reproduces your trades |
 | Evaluate results | `scripts/analyze_trades.py` → profit factor, win rate, payoff, expectancy ($ and R), SQN, max DD, recovery factor, losing streak + Monte Carlo (95th-pct DD, 5th-pct profit, P(ruin)) and red flags; optional Excel |
-| Knowledge | `references/ea-patterns.md` (correct API use), `strategies.md` (archetypes, when they fail, anti-patterns), `risk-and-testing.md` (sizing, tester settings, walk-forward, incubation) |
+| Knowledge | `references/ea-patterns.md` (correct API use), `strategies.md` (archetypes, when they fail, anti-patterns), `risk-and-testing.md` (sizing, tester settings, walk-forward, incubation), `small-account.md` (cent accounts, min-lot math, goal setting, prop accounts) |
 
 ```bash
 python3 .claude/skills/mql5-ea/scripts/scaffold_ea.py MultiStrategyEA --out MQL5/Experts
 python3 .claude/skills/mql5-ea/scripts/check_mq5.py MQL5/Experts/MultiStrategyEA.mq5
 python3 .claude/skills/mql5-ea/scripts/analyze_trades.py trades.csv --initial 10000 --risk 100 --xlsx report.xlsx
+python3 .claude/skills/mql5-ea/scripts/goal_planner.py --capital 10 --target 1000 --months 3 --trades-per-month 60 --trades history.csv --risk-usd 3 --min-risk-usd 1
 ```
 Generated example: [`examples/MultiStrategyEA.mq5`](examples/MultiStrategyEA.mq5).
 
