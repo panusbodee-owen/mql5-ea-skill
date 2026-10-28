@@ -3,7 +3,7 @@
 archetype; the active one is chosen with the input `InpStrategy`.
 
 Usage: scaffold_ea.py NAME [--default ma_cross|donchian|bb_reversion|session_breakout]
-                      [--magic 240001] [--author "..."] [--out Experts/]
+                      [--preset gold_daily_5pct|gold_lot_tiers] [--magic 240001] [--author "..."] [--out Experts/]
 Safety core shared by all strategies: risk-% position sizing from ATR stop, margin check,
 spread/time filters, daily loss limit, ATR trailing stop, magic-number isolation,
 signals on closed bars only, retcode checks, handle release.
@@ -112,18 +112,20 @@ input int    InpTrendMA   = 200;   // Trend filter SMA (0 = off)""",
     },
     "session_breakout": {
         "label": "Session range breakout",
-        "desc": "Session range breakout: range between two server hours, first close outside the range after it ends (one trade per day), flat at close hour",
-        "inputs": """input int InpRangeStartHour = 0;    // Range start (server hour)
-input int InpRangeEndHour   = 7;    // Range end (server hour, exclusive)
-input int InpCloseHour      = 22;   // Close open trade at (server hour)""",
+        "desc": "Session range breakout: range between two hours (server or local time), first close outside the range after it ends (one trade per day), flat at close hour",
+        "inputs": """input int InpRangeStartHour = 0;    // Range start hour (local if InpUseLocalTime)
+input int InpRangeEndHour   = 7;    // Range end hour (exclusive)
+input int InpCloseHour      = 22;   // Close open trade at this hour""",
         "globals": "int g_tradedDay = -1;",
         "init": """   if(InpRangeStartHour >= InpRangeEndHour) { Print("Range start must be before range end"); return INIT_PARAMETERS_INCORRECT; }
    if(PeriodSeconds(_Period) > 3600) Print("Use H1 or lower for session breakout");""",
         "deinit": "",
-        "entry": """   MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
+        "entry": """   datetime now = LocalTime();
+   long shift = (long)now - (long)TimeCurrent();   // local - server seconds (0 when local time is off)
+   MqlDateTime dt; TimeToStruct(now, dt);
    if(dt.hour < InpRangeEndHour || dt.hour >= InpCloseHour || g_tradedDay == dt.day_of_year) return 0;
-   datetime dayStart = iTime(_Symbol, PERIOD_D1, 0);
-   if(dayStart == 0) return 0;
+   long t = (long)now;
+   datetime dayStart = (datetime)(t - t % 86400 - shift);   // local midnight expressed in server time
    int first = iBarShift(_Symbol, _Period, dayStart + InpRangeStartHour * 3600, false);
    int last  = iBarShift(_Symbol, _Period, dayStart + InpRangeEndHour * 3600 - 1, false);
    if(first < 0 || last < 0 || first < last) return 0;
@@ -137,7 +139,7 @@ input int InpCloseHour      = 22;   // Close open trade at (server hour)""",
    if(c > hi) { g_tradedDay = dt.day_of_year; return 1; }
    if(c < lo) { g_tradedDay = dt.day_of_year; return -1; }
    return 0;""",
-        "exit": """   MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
+        "exit": """   MqlDateTime dt; TimeToStruct(LocalTime(), dt);
    return dt.hour >= InpCloseHour;   // flat before the end of the day""",
     },
 }
@@ -185,7 +187,8 @@ input double InpReduceRiskDDPct = 0;     // Halve size while equity is this % be
 input bool   InpResetPeak       = false; // Reset stored peak (set true once after deposit/withdrawal)
 input group "Daily plan"
 input double InpDailyTargetPoints = 0;  // Stop for the day at profit = points x plan lot (e.g. 200; 0 = off)
-input double InpDailyTargetMoney  = 0;  // ...or a fixed money target per day (0 = off; overrides points)
+input double InpDailyTargetPct    = 0;  // ...or % of the day's starting equity (e.g. 5; overrides points)
+input double InpDailyTargetMoney  = 0;  // ...or a fixed money target per day (0 = off; overrides % and points)
 input double InpDailyLossMoney    = 0;  // Stop for the day after losing this much money (e.g. 5; 0 = off)
 input bool   InpUseLocalTime      = false; // Trading hours & day boundary in your local time
 input int    InpLocalGMTOffset    = 7;  // Your time zone (Thailand = +7)
@@ -356,6 +359,7 @@ double PlanLot()   // lot from the sizing plan (fixed or equity tiers); 0 in ris
 double DailyTargetMoney()   // fixed for the whole day, from the plan lot at the start of the day
 {
    if(InpDailyTargetMoney > 0) return InpDailyTargetMoney;
+   if(InpDailyTargetPct > 0) return AccountInfoDouble(ACCOUNT_EQUITY) * InpDailyTargetPct / 100.0;
    if(InpDailyTargetPoints <= 0) return 0;
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
@@ -533,6 +537,39 @@ void OnTick()
 """)
 
 
+PRESETS = {  # input defaults written into the single EA (user can still change them in MT5)
+    "gold_daily_5pct": {
+        "_note": "XAUUSD M5/M15: one win = +5% day target, two losses = -5% day stop; trades 14-22 Thai time",
+        "InpStrategy": "STRAT_SESSION_BREAKOUT",
+        "InpRangeStartHour": "7", "InpRangeEndHour": "14", "InpCloseHour": "23",
+        "InpLotMode": "LOT_RISK_PERCENT", "InpRiskPercent": "2.5", "InpMaxRiskCapPct": "5.0",
+        "InpSL_ATR": "1.5", "InpTP_ATR": "3.0", "InpTrail_ATR": "0.0",
+        "InpDailyTargetPct": "5.0", "InpMaxDailyLossPct": "5.0", "InpMaxDrawdownPct": "30",
+        "InpUseLocalTime": "true", "InpLocalGMTOffset": "7", "InpServerGMTOffset": "2",
+        "InpStartHour": "14", "InpEndHour": "22", "InpMaxSpreadPts": "60",
+    },
+    "gold_lot_tiers": {
+        "_note": "User game plan: equity-tier lots, 200-point daily target, $5 day stop, 12-22 Thai time",
+        "InpLotMode": "LOT_TIERS", "InpDailyTargetPoints": "200", "InpDailyLossMoney": "5",
+        "InpMaxDailyLossPct": "0", "InpUseLocalTime": "true", "InpLocalGMTOffset": "7",
+        "InpServerGMTOffset": "2", "InpStartHour": "12", "InpEndHour": "22", "InpMaxSpreadPts": "60",
+    },
+}
+
+
+def apply_preset(code, preset):
+    import re
+    for key, val in PRESETS[preset].items():
+        if key.startswith("_"):
+            continue
+        pat = re.compile(r"^(input\s+\w+\s+" + key + r"\s*=\s*)([^;]+)(;)", re.M)
+        code, n = pat.subn(lambda m: m.group(1) + val + m.group(3), code)
+        if n != 1:
+            sys.exit(f"preset {preset}: input {key} not found")
+    note = PRESETS[preset]["_note"]
+    return code.replace("//| Generated by the mql5-ea skill.", f"//| Preset: {preset} — {note}\n//| Generated by the mql5-ea skill.", 1)
+
+
 def build(name, default, magic, author):
     keys = list(STRATEGIES)
     enum = lambda k: "STRAT_" + k.upper()  # noqa: E731
@@ -569,6 +606,7 @@ def main():
     p.add_argument("--default", default="ma_cross", choices=sorted(STRATEGIES), help="strategy preselected in inputs")
     p.add_argument("--magic", type=int, default=240001)
     p.add_argument("--author", default="")
+    p.add_argument("--preset", choices=sorted(PRESETS), default=None, help="write preset input defaults into the EA")
     p.add_argument("--out", default=".")
     a = p.parse_args()
     if not a.name.replace("_", "").isalnum():
@@ -577,8 +615,11 @@ def main():
     path = os.path.join(a.out, a.name + ".mq5")
     if os.path.exists(path):
         sys.exit(f"{path} exists — this skill keeps ONE EA: edit that file instead of creating another")
+    code = build(a.name, a.default, a.magic, a.author)
+    if a.preset:
+        code = apply_preset(code, a.preset)
     with open(path, "w", encoding="utf-8") as f:
-        f.write(build(a.name, a.default, a.magic, a.author))
+        f.write(code)
     print(path)
 
 

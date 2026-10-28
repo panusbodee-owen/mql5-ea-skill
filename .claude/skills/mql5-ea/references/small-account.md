@@ -45,6 +45,10 @@ Captured from a user's own "$5 → $100k in 100 days" game plan: lot steps up as
 
 Reality check to show with the plan: the table needs ≈ +10% per day compounded; with $5 stop-day on a $10 account one bad day is −50%. Run `goal_planner.py` with the user's real trades before going live.
 
+## Preset: gold_daily_5pct (daily % target)
+`scaffold_ea.py NAME --preset gold_daily_5pct` → session breakout on XAUUSD (range 07–14 Thai time, entries 14–22, flat 23), one trade per day, risk 2.5% with TP = 2×SL so one win ≈ +5% = day target (`InpDailyTargetPct = 5`), daily loss stop 5%, drawdown hard stop 30%, min-lot risk cap 5%.
+On ~$100 gold accounts the 0.01-lot loss is often ~$3–5 (3–5%), so real risk is set by the minimum lot; below ~$80 equity the cap blocks trades. Cent account or a tighter stop timeframe (M5) keeps sizing correct.
+
 ## Goal setting (use goal_planner output, not promises)
 - Express the goal as required growth: e.g. $15 → $1,015 in 12 months = ×68 ≈ +42%/month.
 - Report P(goal), P(lost half) and median drawdown for the user's actual edge, then let the user choose the risk level.
