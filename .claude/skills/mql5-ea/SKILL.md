@@ -17,6 +17,7 @@ description: MQL5 Expert Advisor development for MetaTrader 5 — always deliver
 3. Results → run `scripts/analyze_trades.py` on the exported trades; never compute metrics in chat.
 4. Load one reference at a time: `ea-patterns.md` (API/how), `strategies.md` (which archetype), `risk-and-testing.md` (sizing/validation), `small-account.md` (small capital, money goals, capturing the user's own method), `books.md` (only when asked for sources).
 5. Money target or small capital mentioned → run `goal_planner.py` and show its table; never promise a profit.
+7. "What is the win rate?" → never guess: run `session_backtest.py` on real bars (MT5 export Ctrl+U → Bars, or Dukascopy) per year, then `goal_planner.py --trades bt.csv`. No data → ask for it.
 6. Daily % goal (e.g. "5% per day") → it is a stop-at-target rule, not a guarantee: set `InpDailyTargetPct`, size so one win ≈ target (risk = target ÷ RR) and the daily loss stop ≈ 1–2 losses; show min-lot risk for the account size. Presets: `gold_daily_5pct`, `gold_lot_tiers` (add new presets to `PRESETS` in scaffold_ea.py).
 
 ## Scripts (run, do not read)
@@ -26,6 +27,7 @@ python3 $S/scaffold_ea.py MyEA [--default ma_cross|donchian|bb_reversion|session
 python3 $S/check_mq5.py MQL5/Experts/MyEA.mq5
 python3 $S/analyze_trades.py trades.csv --initial 10000 --risk 100 [--xlsx report.xlsx]
 python3 $S/goal_planner.py --capital 15 --target 1015 --months 12 --trades-per-month 60 --min-risk-usd 1 [--winrate 0.5 --rr 1.5 | --trades history.csv --risk-usd 3]
+python3 $S/session_backtest.py XAUUSD_M15.csv --data-gmt 2 [--range 7-14 --trade 14-22 --close 23 --sl-atr 1.5 --tp-atr 3] --trades-out bt.csv   # real win rate per year for session_breakout
 ```
 
 ## User's own method
