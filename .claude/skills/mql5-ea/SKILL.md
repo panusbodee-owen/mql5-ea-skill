@@ -27,6 +27,7 @@ python3 $S/scaffold_ea.py MyEA [--default ma_cross|donchian|bb_reversion|session
 python3 $S/check_mq5.py MQL5/Experts/MyEA.mq5
 python3 $S/analyze_trades.py trades.csv --initial 10000 --risk 100 [--xlsx report.xlsx]
 python3 $S/goal_planner.py --capital 15 --target 1015 --months 12 --trades-per-month 60 --min-risk-usd 1 [--winrate 0.5 --rr 1.5 | --trades history.csv --risk-usd 3]
+python3 $S/fetch_dukascopy.py XAUUSD 2022-01-01 2025-10-01 --out xau_m1.csv   # needs datafeed.dukascopy.com allowed
 python3 $S/session_backtest.py XAUUSD_M15.csv --data-gmt 2 [--range 7-14 --trade 14-22 --close 23 --sl-atr 1.5 --tp-atr 3] --trades-out bt.csv   # real win rate per year for session_breakout
 ```
 
